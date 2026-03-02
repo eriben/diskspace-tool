@@ -496,6 +496,25 @@ fn classify_path(path: &Path, name: &str, installed: &InstalledApps) -> Category
                     return Category::OrphanedAppData;
                 }
             }
+        } else if parent_name == "PreferencePanes" {
+            // e.g. ~/Library/PreferencePanes/OldApp.prefPane
+            let base = name.trim_end_matches(".prefPane");
+            if !installed.has_name(base) && !is_apple_system_folder(base) {
+                return Category::OrphanedAppData;
+            }
+        } else if parent_name == "Internet Plug-Ins" || parent_name == "QuickLook" {
+            // Orphaned browser plugins and QuickLook generators
+            let base = name
+                .trim_end_matches(".plugin")
+                .trim_end_matches(".qlgenerator");
+            if !installed.has_name(base) && !is_apple_system_folder(base) {
+                return Category::OrphanedAppData;
+            }
+        } else if parent_name == "Screen Savers" {
+            let base = name.trim_end_matches(".saver");
+            if !installed.has_name(base) && !is_apple_system_folder(base) {
+                return Category::OrphanedAppData;
+            }
         }
     }
 
@@ -1294,9 +1313,36 @@ fn render_tree_view(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .collect()
     };
 
-    let mut title = format!(" 📂 {} ", app.current_path.to_string_lossy());
+    // Build clearable-space summary for the title bar
+    let clearable_summary = app.scan_result.as_ref().map(|r| {
+        let clearable: u64 = r
+            .category_sizes
+            .iter()
+            .filter(|(label, _)| {
+                Category::all_clearable()
+                    .iter()
+                    .any(|c| c.label() == label.as_str())
+            })
+            .map(|(_, s)| *s)
+            .sum();
+        if clearable > 0 {
+            format!("  🧹 {} clearable", ByteSize(clearable))
+        } else {
+            String::new()
+        }
+    }).unwrap_or_default();
+
+    let mut title = format!(
+        " 📂 {}{}",
+        app.current_path.to_string_lossy(),
+        clearable_summary
+    );
     if !app.path_stack.is_empty() {
-        title = format!(" 📂 {} (⌫ to go back) ", app.current_path.to_string_lossy());
+        title = format!(
+            " 📂 {} (⌫ back){}",
+            app.current_path.to_string_lossy(),
+            clearable_summary
+        );
     }
 
     let block = Block::default()
@@ -1824,11 +1870,33 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let root = if args.len() > 1 {
-        PathBuf::from(&args[1])
-    } else {
-        dirs_home()
-    };
+
+    // Handle --help / --version before touching the terminal
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("diskspace — TUI disk space analyzer for macOS\n");
+        println!("USAGE:");
+        println!("  diskspace [PATH]         scan PATH (default: $HOME)");
+        println!("  diskspace --help         show this help");
+        println!("  diskspace --version      show version\n");
+        println!("NAVIGATION:");
+        println!("  ↑/↓  j/k    navigate      Enter/→/l  drill in");
+        println!("  ←/h  ⌫     go back        Tab        switch view");
+        println!("  /           search         r          rescan");
+        println!("  g/G         top/bottom     q          quit\n");
+        println!("VIEWS:  🌳 Tree  |  📊 Top Files  |  🏷️  Categories");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("diskspace {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let root = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .filter(|a| *a != args.first().unwrap_or(a))
+        .map(PathBuf::from)
+        .unwrap_or_else(dirs_home);
 
     let root = fs::canonicalize(&root).unwrap_or(root);
 
