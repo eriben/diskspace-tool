@@ -29,7 +29,7 @@ use std::{
 
 // ── Category system ──────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Category {
     Cache,
     BuildArtifact,
@@ -1633,12 +1633,20 @@ fn render_categories(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 Category::Messages,
                 Category::ICloud,
                 Category::AppData,
+                Category::OrphanedAppData,
                 Category::Downloads,
                 Category::Trash,
                 Category::NodeModules,
                 Category::PackageCache,
                 Category::Xcode,
                 Category::Logs,
+                Category::VirtualMachine,
+                Category::BrowserData,
+                Category::Mail,
+                Category::Photos,
+                Category::MusicMedia,
+                Category::Backup,
+                Category::Python,
             ]
             .iter()
             .find(|c| c.label() == name.as_str())
@@ -1900,6 +1908,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let root = fs::canonicalize(&root).unwrap_or(root);
 
+    // Install panic hook to restore terminal state on crash
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2159,3 +2175,350 @@ fn dirs_home() -> PathBuf {
 // We need libc for statfs
 #[cfg(unix)]
 extern crate libc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn empty_installed() -> InstalledApps {
+        InstalledApps {
+            names: HashSet::new(),
+            bundle_ids: HashSet::new(),
+        }
+    }
+
+    fn installed_with(names: &[&str], bundle_ids: &[&str]) -> InstalledApps {
+        InstalledApps {
+            names: names.iter().map(|s| s.to_lowercase()).collect(),
+            bundle_ids: bundle_ids.iter().map(|s| s.to_lowercase()).collect(),
+        }
+    }
+
+    // ── looks_like_bundle_id ─────────────────────────────────
+
+    #[test]
+    fn test_looks_like_bundle_id_valid() {
+        assert!(looks_like_bundle_id("com.apple.mail"));
+        assert!(looks_like_bundle_id("com.tinyspeck.slackmacgap"));
+        assert!(looks_like_bundle_id("org.mozilla.firefox"));
+    }
+
+    #[test]
+    fn test_looks_like_bundle_id_invalid() {
+        assert!(!looks_like_bundle_id("Slack"));
+        assert!(!looks_like_bundle_id("a.b"));
+        assert!(!looks_like_bundle_id("short.id"));
+        assert!(!looks_like_bundle_id("has spaces.in.it"));
+    }
+
+    // ── is_apple_system_bundle ───────────────────────────────
+
+    #[test]
+    fn test_apple_system_bundle() {
+        assert!(is_apple_system_bundle("com.apple.mail"));
+        assert!(is_apple_system_bundle("com.apple.dt.Xcode"));
+        assert!(is_apple_system_bundle("COM.APPLE.Safari"));
+    }
+
+    #[test]
+    fn test_not_apple_system_bundle() {
+        assert!(!is_apple_system_bundle("com.tinyspeck.slackmacgap"));
+        assert!(!is_apple_system_bundle("org.mozilla.firefox"));
+    }
+
+    // ── is_apple_system_folder ───────────────────────────────
+
+    #[test]
+    fn test_apple_system_folder() {
+        assert!(is_apple_system_folder("Apple"));
+        assert!(is_apple_system_folder("Dock"));
+        assert!(is_apple_system_folder("Safari"));
+        assert!(is_apple_system_folder("com.apple.something"));
+    }
+
+    #[test]
+    fn test_not_apple_system_folder() {
+        assert!(!is_apple_system_folder("Slack"));
+        assert!(!is_apple_system_folder("Firefox"));
+    }
+
+    // ── should_skip_path ─────────────────────────────────────
+
+    #[test]
+    fn test_skip_system_volumes() {
+        let root = Path::new("/");
+        assert!(should_skip_path(Path::new("/System/Volumes/Data"), root));
+        assert!(should_skip_path(Path::new("/System/Volumes/VM"), root));
+        assert!(should_skip_path(Path::new("/dev"), root));
+        assert!(should_skip_path(Path::new("/proc"), root));
+    }
+
+    #[test]
+    fn test_no_skip_under_home() {
+        let root = Path::new("/Users/testuser");
+        assert!(!should_skip_path(Path::new("/Users/testuser/Library"), root));
+    }
+
+    #[test]
+    fn test_skip_time_machine() {
+        let root = Path::new("/");
+        assert!(should_skip_path(
+            Path::new("/Volumes/com.apple.TimeMachine.localsnapshots"),
+            root
+        ));
+    }
+
+    // ── classify_path ────────────────────────────────────────
+
+    #[test]
+    fn test_classify_trash() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(Path::new("/Users/me/.Trash"), ".Trash", &installed),
+            Category::Trash
+        );
+    }
+
+    #[test]
+    fn test_classify_node_modules() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/project/node_modules"),
+                "node_modules",
+                &installed
+            ),
+            Category::NodeModules
+        );
+    }
+
+    #[test]
+    fn test_classify_cache() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Caches/something"),
+                "something",
+                &installed
+            ),
+            Category::Cache
+        );
+    }
+
+    #[test]
+    fn test_classify_docker() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(Path::new("/Users/me/.docker"), ".docker", &installed),
+            Category::Docker
+        );
+    }
+
+    #[test]
+    fn test_classify_ios_simulator() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Developer/CoreSimulator/Devices"),
+                "Devices",
+                &installed
+            ),
+            Category::Simulator
+        );
+    }
+
+    #[test]
+    fn test_classify_xcode() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Developer/Xcode"),
+                "Xcode",
+                &installed
+            ),
+            Category::Xcode
+        );
+    }
+
+    #[test]
+    fn test_classify_vm_files() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/VMs/test.vmwarevm"),
+                "test.vmwarevm",
+                &installed
+            ),
+            Category::VirtualMachine
+        );
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/VMs/test.qcow2"),
+                "test.qcow2",
+                &installed
+            ),
+            Category::VirtualMachine
+        );
+    }
+
+    #[test]
+    fn test_classify_browser_data() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Application Support/Google/Chrome"),
+                "Chrome",
+                &installed
+            ),
+            Category::BrowserData
+        );
+    }
+
+    #[test]
+    fn test_classify_icloud() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Mobile Documents"),
+                "Mobile Documents",
+                &installed
+            ),
+            Category::ICloud
+        );
+    }
+
+    #[test]
+    fn test_classify_downloads() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Downloads"),
+                "Downloads",
+                &installed
+            ),
+            Category::Downloads
+        );
+    }
+
+    #[test]
+    fn test_classify_backup() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Application Support/MobileSync/Backup"),
+                "Backup",
+                &installed
+            ),
+            Category::Backup
+        );
+    }
+
+    #[test]
+    fn test_classify_messages() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Messages/Attachments"),
+                "Attachments",
+                &installed
+            ),
+            Category::Messages
+        );
+    }
+
+    #[test]
+    fn test_classify_logs() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Logs"),
+                "Logs",
+                &installed
+            ),
+            Category::Logs
+        );
+    }
+
+    #[test]
+    fn test_classify_uncategorized() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Documents"),
+                "Documents",
+                &installed
+            ),
+            Category::None
+        );
+    }
+
+    // ── InstalledApps ────────────────────────────────────────
+
+    #[test]
+    fn test_installed_apps_has_name() {
+        let apps = installed_with(&["slack", "zoom"], &[]);
+        assert!(apps.has_name("Slack"));
+        assert!(apps.has_name("slack"));
+        assert!(!apps.has_name("Firefox"));
+    }
+
+    #[test]
+    fn test_installed_apps_has_bundle_id() {
+        let apps = installed_with(&[], &["com.tinyspeck.slackmacgap"]);
+        assert!(apps.has_bundle_id("com.tinyspeck.slackmacgap"));
+        assert!(apps.has_bundle_id("COM.TINYSPECK.SLACKMACGAP"));
+        assert!(!apps.has_bundle_id("org.mozilla.firefox"));
+    }
+
+    // ── Category methods ─────────────────────────────────────
+
+    #[test]
+    fn test_all_categories_have_labels() {
+        let categories = [
+            Category::Cache,
+            Category::BuildArtifact,
+            Category::Docker,
+            Category::Simulator,
+            Category::Messages,
+            Category::ICloud,
+            Category::AppData,
+            Category::OrphanedAppData,
+            Category::Downloads,
+            Category::Trash,
+            Category::NodeModules,
+            Category::PackageCache,
+            Category::Xcode,
+            Category::Logs,
+            Category::VirtualMachine,
+            Category::BrowserData,
+            Category::Mail,
+            Category::Photos,
+            Category::MusicMedia,
+            Category::Backup,
+            Category::Python,
+        ];
+        for cat in &categories {
+            assert!(!cat.emoji().is_empty(), "Missing emoji for {:?}", cat);
+            assert!(!cat.label().is_empty(), "Missing label for {:?}", cat);
+        }
+    }
+
+    #[test]
+    fn test_category_none_has_empty_label() {
+        assert_eq!(Category::None.label(), "");
+    }
+
+    // ── file_emoji ───────────────────────────────────────────
+
+    #[test]
+    fn test_file_emoji() {
+        assert_eq!(file_emoji("archive.zip"), "📦");
+        assert_eq!(file_emoji("disk.dmg"), "💿");
+        assert_eq!(file_emoji("movie.mp4"), "🎬");
+        assert_eq!(file_emoji("song.mp3"), "🎵");
+        assert_eq!(file_emoji("photo.jpg"), "🖼️ ");
+        assert_eq!(file_emoji("document.pdf"), "📄");
+        assert_eq!(file_emoji("unknown.xyz"), "📄");
+    }
+}
