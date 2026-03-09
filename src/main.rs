@@ -52,6 +52,7 @@ enum Category {
     MusicMedia,
     Backup,
     Python,
+    AndroidSdk,
     None,
 }
 
@@ -79,6 +80,7 @@ impl Category {
             Category::MusicMedia => "🎵",
             Category::Backup => "💾",
             Category::Python => "🐍",
+            Category::AndroidSdk => "🤖",
             Category::None => "📁",
         }
     }
@@ -106,6 +108,7 @@ impl Category {
             Category::MusicMedia => "MUSIC",
             Category::Backup => "BACKUP",
             Category::Python => "PYTHON",
+            Category::AndroidSdk => "ANDROID SDK",
             Category::None => "",
         }
     }
@@ -133,6 +136,7 @@ impl Category {
             Category::MusicMedia => Color::Rgb(160, 120, 255),
             Category::Backup => Color::Rgb(100, 220, 180),
             Category::Python => Color::Rgb(80, 180, 80),
+            Category::AndroidSdk => Color::Rgb(100, 200, 80),
             Category::None => Color::Reset,
         }
     }
@@ -153,6 +157,7 @@ impl Category {
             Category::BrowserData => "🌐 Browser profiles/cache",
             Category::Backup => "💾 iOS backups — check iTunes/Finder",
             Category::Python => "🐍 venvs/pyenv — rm -rf to reclaim",
+            Category::AndroidSdk => "🤖 Android Studio → SDK Manager / AVD Manager",
             _ => "",
         }
     }
@@ -170,6 +175,7 @@ impl Category {
             Category::Xcode,
             Category::OrphanedAppData,
             Category::Python,
+            Category::AndroidSdk,
         ]
     }
 }
@@ -294,6 +300,15 @@ fn classify_path(path: &Path, name: &str, installed: &InstalledApps) -> Category
         return Category::Backup;
     }
 
+    // ── Android SDK / Emulators ─────────────────────────────
+    if path_str.contains("/Library/Android/")
+        || path_str.contains("/.android/avd")
+        || path_str.contains("/.android/cache")
+        || (name == ".android" && path_str.contains("/Users/"))
+    {
+        return Category::AndroidSdk;
+    }
+
     // ── Xcode / iOS Simulators ───────────────────────────────
     if path_str.contains("/CoreSimulator/Devices")
         || path_str.contains("/CoreSimulator/Caches")
@@ -329,6 +344,7 @@ fn classify_path(path: &Path, name: &str, installed: &InstalledApps) -> Category
 
     // ── Build artifacts ──────────────────────────────────────
     if name == ".gradle"
+        || name == ".grails"
         || name == ".m2"
         || (name == "target"
             && (path.join("debug").exists() || path.join("release").exists()))
@@ -438,7 +454,12 @@ fn classify_path(path: &Path, name: &str, installed: &InstalledApps) -> Category
     }
 
     // ── Package manager caches ───────────────────────────────
-    if path_str.contains("/.npm") || path_str.contains("/.yarn") || path_str.contains("/.pnpm") {
+    if path_str.contains("/.npm")
+        || path_str.contains("/.yarn")
+        || path_str.contains("/.pnpm")
+        || path_str.contains("/.nvm")
+        || path_str.contains("/.bun")
+    {
         return Category::PackageCache;
     }
 
@@ -1647,6 +1668,7 @@ fn render_categories(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 Category::MusicMedia,
                 Category::Backup,
                 Category::Python,
+                Category::AndroidSdk,
             ]
             .iter()
             .find(|c| c.label() == name.as_str())
@@ -2281,6 +2303,15 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_grails_cache() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(Path::new("/Users/me/.grails"), ".grails", &installed),
+            Category::BuildArtifact
+        );
+    }
+
+    #[test]
     fn test_classify_node_modules() {
         let installed = empty_installed();
         assert_eq!(
@@ -2290,6 +2321,32 @@ mod tests {
                 &installed
             ),
             Category::NodeModules
+        );
+    }
+
+    #[test]
+    fn test_classify_nvm_cache() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/.nvm/versions/node/v20"),
+                "v20",
+                &installed
+            ),
+            Category::PackageCache
+        );
+    }
+
+    #[test]
+    fn test_classify_bun_cache() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/.bun/install/cache"),
+                "cache",
+                &installed
+            ),
+            Category::PackageCache
         );
     }
 
@@ -2325,6 +2382,32 @@ mod tests {
                 &installed
             ),
             Category::Simulator
+        );
+    }
+
+    #[test]
+    fn test_classify_android_sdk() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/Library/Android/sdk"),
+                "sdk",
+                &installed
+            ),
+            Category::AndroidSdk
+        );
+    }
+
+    #[test]
+    fn test_classify_android_avd() {
+        let installed = empty_installed();
+        assert_eq!(
+            classify_path(
+                Path::new("/Users/me/.android/avd/Pixel_9_Pro.avd"),
+                "Pixel_9_Pro.avd",
+                &installed
+            ),
+            Category::AndroidSdk
         );
     }
 
@@ -2497,6 +2580,7 @@ mod tests {
             Category::MusicMedia,
             Category::Backup,
             Category::Python,
+            Category::AndroidSdk,
         ];
         for cat in &categories {
             assert!(!cat.emoji().is_empty(), "Missing emoji for {:?}", cat);
